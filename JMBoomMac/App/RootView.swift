@@ -3,8 +3,11 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppSettings.self) private var settings
+    @Environment(UserSessionStore.self) private var userSession
 
     var body: some View {
+        @Bindable var userSession = userSession
+
         NavigationSplitView {
             List(selection: sidebarSelection) {
                 Section("浏览") {
@@ -16,6 +19,13 @@ struct RootView: View {
 
                 Section("个人收藏") {
                     ForEach(SidebarItem.libraryItems) { item in
+                        SidebarRow(item: item)
+                            .tag(item.route)
+                    }
+                }
+
+                Section("账户") {
+                    ForEach(SidebarItem.accountItems) { item in
                         SidebarRow(item: item)
                             .tag(item.route)
                     }
@@ -46,6 +56,9 @@ struct RootView: View {
         .task {
             await JMBoomAPI.shared.configureProxy(mode: settings.proxyMode, host: settings.proxyHost, port: settings.proxyPort)
         }
+        .sheet(isPresented: $userSession.isLoginPresented) {
+            LoginView()
+        }
     }
 
     private var sidebarSelection: Binding<AppRoute?> {
@@ -54,6 +67,9 @@ struct RootView: View {
         } set: { route in
             guard let route else { return }
             router.selectRoot(route)
+            if route == .me, userSession.user == nil {
+                userSession.presentLogin()
+            }
         }
     }
 }
@@ -77,6 +93,10 @@ private struct SidebarItem: Identifiable {
     static let libraryItems = [
         SidebarItem(title: "收藏", systemImage: "heart", route: .favorites),
         SidebarItem(title: "历史", systemImage: "clock", route: .history)
+    ]
+
+    static let accountItems = [
+        SidebarItem(title: "我的", systemImage: "person.crop.circle", route: .me)
     ]
 
     static let appItems = [
@@ -120,10 +140,14 @@ private struct DetailRouterView: View {
             FavoritesView()
         case .history:
             HistoryView()
+        case .me:
+            MeView()
         case .settings:
             SettingsView()
         case .comic(let id):
             ComicDetailView(comicId: id)
+        case .comments(let route):
+            ComicCommentsView(route: route)
         case .reader(let route):
             ReaderScreen(route: route)
         }
@@ -133,7 +157,7 @@ private struct DetailRouterView: View {
 private extension AppRoute {
     var rootEquivalent: AppRoute {
         switch self {
-        case .comic:
+        case .comic, .comments:
             .home
         case .reader:
             .home

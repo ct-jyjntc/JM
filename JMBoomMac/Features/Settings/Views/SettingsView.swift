@@ -86,6 +86,13 @@ struct SettingsView: View {
             }
 
             Section("显示") {
+                Picker("主题", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 Toggle("隐藏封面", isOn: $settings.hideCovers)
                 Button("恢复默认", systemImage: "arrow.counterclockwise") {
                     settings.reset()

@@ -5,19 +5,27 @@ struct ComicDetailView: View {
 
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
+    @Environment(UserSessionStore.self) private var userSession
     @State private var viewModel = ComicDetailViewModel()
 
     var body: some View {
+        let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
+
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
                 if viewModel.isLoading && viewModel.comic == nil {
                     LoadingStateView(title: "正在加载详情")
                 } else if let error = viewModel.errorMessage {
                     ErrorStateView(title: "详情加载失败", message: error) {
-                        Task { await viewModel.refresh(comicId: comicId, endpoint: settings.apiEndpoint) }
+                        Task { await viewModel.refresh(comicId: comicId, endpoint: endpoint) }
                     }
                 } else if let comic = viewModel.comic {
-                    ComicDetailContentView(comic: comic)
+                    ComicDetailContentView(
+                        comic: comic,
+                        isFavoriteBusy: viewModel.isTogglingFavorite,
+                        actionMessage: viewModel.actionMessage,
+                        toggleFavorite: toggleFavorite
+                    )
                 } else {
                     EmptyStateView(title: "暂无详情", message: "当前作品没有返回可展示的详情。")
                 }
@@ -27,29 +35,50 @@ struct ComicDetailView: View {
         .navigationTitle("JM \(comicId)")
         .toolbar {
             Button("刷新", systemImage: "arrow.clockwise") {
-                Task { await viewModel.refresh(comicId: comicId, endpoint: settings.apiEndpoint) }
+                Task { await viewModel.refresh(comicId: comicId, endpoint: endpoint) }
             }
             .labelStyle(.iconOnly)
             .help("刷新")
         }
         .task(id: comicId) {
-            await viewModel.load(comicId: comicId, endpoint: settings.apiEndpoint)
+            await viewModel.load(comicId: comicId, endpoint: endpoint)
+        }
+    }
+
+    private func toggleFavorite() {
+        guard userSession.user != nil else {
+            userSession.presentLogin()
+            return
+        }
+
+        Task {
+            await viewModel.toggleFavorite(endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint))
         }
     }
 }
 
 private struct ComicDetailContentView: View {
     let comic: ComicDetail
+    let isFavoriteBusy: Bool
+    let actionMessage: String?
+    let toggleFavorite: () -> Void
 
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
-    @Environment(FavoriteStore.self) private var favorites
 
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
-            ComicHeroView(comic: comic, hideCover: settings.hideCovers, isFavorite: favorites.contains(comic.id)) {
-                favorites.toggle(comic)
-            }
+            ComicHeroView(
+                comic: comic,
+                hideCover: settings.hideCovers,
+                isFavorite: comic.isFavorite,
+                isFavoriteBusy: isFavoriteBusy,
+                actionMessage: actionMessage,
+                toggleFavorite: toggleFavorite,
+                showComments: {
+                    router.openComments(comicId: comic.id, title: comic.title, commentTotal: comic.commentTotal)
+                }
+            )
 
             HStack(alignment: .top, spacing: 24) {
                 ChaptersView(comic: comic) { chapter, chapterTitle, chapters in
@@ -80,7 +109,10 @@ private struct ComicHeroView: View {
     let comic: ComicDetail
     let hideCover: Bool
     let isFavorite: Bool
+    let isFavoriteBusy: Bool
+    let actionMessage: String?
     let toggleFavorite: () -> Void
+    let showComments: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
@@ -107,7 +139,18 @@ private struct ComicHeroView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-                Button(isFavorite ? "取消收藏" : "收藏", systemImage: isFavorite ? "heart.fill" : "heart", action: toggleFavorite)
+                HStack {
+                    Button(isFavoriteBusy ? "处理中" : (isFavorite ? "取消收藏" : "收藏"), systemImage: isFavorite ? "heart.fill" : "heart", action: toggleFavorite)
+                        .disabled(isFavoriteBusy)
+
+                    Button("评论", systemImage: "bubble", action: showComments)
+                }
+
+                if let actionMessage, !actionMessage.isEmpty {
+                    Text(actionMessage)
+                        .font(.footnote)
+                        .foregroundStyle(actionMessage.contains("失败") ? .red : .secondary)
+                }
 
                 if !comic.description.isEmpty {
                     Text(comic.description)

@@ -6,6 +6,7 @@ struct JMBoomMacApp: App {
     @State private var router = AppRouter()
     @State private var history = ReadingHistoryStore()
     @State private var favorites = FavoriteStore()
+    @State private var userSession = UserSessionStore()
 
     var body: some Scene {
         WindowGroup {
@@ -14,12 +15,24 @@ struct JMBoomMacApp: App {
                 .environment(router)
                 .environment(history)
                 .environment(favorites)
+                .environment(userSession)
                 .frame(minWidth: 980, minHeight: 680)
+                .preferredColorScheme(settings.appearance.colorScheme)
         }
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
             SidebarCommands()
+        }
+    }
+}
+
+private extension AppAppearance {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
         }
     }
 }

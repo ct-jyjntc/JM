@@ -42,7 +42,7 @@ struct ComicDetail: Identifiable, Codable, Hashable, Sendable {
     let tags: [String]
     let actors: [String]
     let works: [String]
-    let isFavorite: Bool
+    var isFavorite: Bool
     let liked: Bool
     let relatedList: [RelatedComic]
     let series: [ComicChapter]

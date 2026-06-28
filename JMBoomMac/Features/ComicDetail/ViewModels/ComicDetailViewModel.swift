@@ -6,7 +6,9 @@ import Observation
 final class ComicDetailViewModel {
     private(set) var comic: ComicDetail?
     private(set) var isLoading = false
+    private(set) var isTogglingFavorite = false
     private(set) var errorMessage: String?
+    private(set) var actionMessage: String?
 
     private let api: JMBoomAPI
 
@@ -33,5 +35,21 @@ final class ComicDetailViewModel {
     func refresh(comicId: String, endpoint: String) async {
         comic = nil
         await load(comicId: comicId, endpoint: endpoint)
+    }
+
+    func toggleFavorite(endpoint: String) async {
+        guard let current = comic, !isTogglingFavorite else { return }
+
+        isTogglingFavorite = true
+        actionMessage = nil
+        defer { isTogglingFavorite = false }
+
+        do {
+            let result = try await api.toggleComicFavorite(comicId: current.id, currentFavorite: current.isFavorite, endpoint: endpoint)
+            comic?.isFavorite = result.favorited
+            actionMessage = result.favorited ? "已添加收藏" : "已取消收藏"
+        } catch {
+            actionMessage = error.localizedDescription
+        }
     }
 }

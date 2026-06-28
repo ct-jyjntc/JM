@@ -17,6 +17,22 @@ enum ProxyMode: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+enum AppAppearance: String, CaseIterable, Identifiable, Codable, Sendable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "跟随系统"
+        case .light: "日间"
+        case .dark: "夜间"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AppSettings {
@@ -57,6 +73,10 @@ final class AppSettings {
         didSet { persist(hideCovers, key: Keys.hideCovers) }
     }
 
+    var appearance: AppAppearance {
+        didSet { persist(appearance.rawValue, key: Keys.appearance) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         apiEndpoint = Self.normalizedEndpoint(defaults.string(forKey: Keys.apiEndpoint) ?? Self.fallbackEndpoints[0])
@@ -67,6 +87,7 @@ final class AppSettings {
         proxyHost = defaults.string(forKey: Keys.proxyHost) ?? "127.0.0.1"
         proxyPort = defaults.object(forKey: Keys.proxyPort) as? Int ?? 7890
         hideCovers = defaults.object(forKey: Keys.hideCovers) as? Bool ?? true
+        appearance = AppAppearance(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .system
         sanitize()
     }
 
@@ -79,6 +100,7 @@ final class AppSettings {
         proxyHost = "127.0.0.1"
         proxyPort = 7890
         hideCovers = true
+        appearance = .system
     }
 
     func setEndpoint(_ value: String) {
@@ -130,5 +152,6 @@ final class AppSettings {
         static let proxyHost = "jm-boom.proxyHost"
         static let proxyPort = "jm-boom.proxyPort"
         static let hideCovers = "jm-boom.hideCovers"
+        static let appearance = "jm-boom.appearance"
     }
 }
