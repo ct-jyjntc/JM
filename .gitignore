@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode
+# 用户数据（每个开发者不同，不应共享）
+**/xcuserdata/
+*.xcuserstate
+*.xcuserstate.*
+xcuserdata/
+
+# Xcode 构建产物
+build/
+build-universal/
+DerivedData/
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.swiftpm/Package.resolved
+
+# 分发产物
+dist/
+*.dmg
+*.zip
+*.app
+
+# CocoaPods（如有）
+Pods/
+
+# Carthage（如有）
+Carthage/Build/
+
+# fastlane（如有）
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# 杂项
+*.log
+*.hmap
+*.ipa
