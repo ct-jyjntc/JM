@@ -7,6 +7,7 @@ final class ComicDetailViewModel {
     private(set) var comic: ComicDetail?
     private(set) var isLoading = false
     private(set) var isTogglingFavorite = false
+    private(set) var isPurchasing = false
     private(set) var errorMessage: String?
     private(set) var actionMessage: String?
 
@@ -51,5 +52,31 @@ final class ComicDetailViewModel {
         } catch {
             actionMessage = error.localizedDescription
         }
+    }
+
+    func purchase(endpoint: String) async {
+        guard let current = comic, !isPurchasing else { return }
+
+        isPurchasing = true
+        actionMessage = nil
+        defer { isPurchasing = false }
+
+        do {
+            let result = try await api.purchaseComic(comicId: current.id, endpoint: endpoint)
+            let updated = try await api.comicDetail(comicId: current.id, endpoint: result.endpoint)
+            comic = updated
+            if updated.purchased {
+                actionMessage = "购买成功"
+            } else {
+                let message = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+                actionMessage = message.isEmpty ? "购买状态尚未确认，请在官网完成购买后刷新详情。" : "\(message) 未确认已购状态，请刷新或前往官网完成购买。"
+            }
+        } catch {
+            actionMessage = error.localizedDescription
+        }
+    }
+
+    func noteOfficialPurchaseFallback() {
+        actionMessage = "已打开官网购买页；完成购买后请点刷新购买状态。"
     }
 }

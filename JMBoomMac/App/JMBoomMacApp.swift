@@ -6,6 +6,8 @@ struct JMBoomMacApp: App {
     @State private var router = AppRouter()
     @State private var history = ReadingHistoryStore()
     @State private var favorites = FavoriteStore()
+    @State private var downloads = DownloadStore()
+    @State private var purchases = PurchasedComicStore()
     @State private var userSession = UserSessionStore()
 
     var body: some Scene {
@@ -15,6 +17,8 @@ struct JMBoomMacApp: App {
                 .environment(router)
                 .environment(history)
                 .environment(favorites)
+                .environment(downloads)
+                .environment(purchases)
                 .environment(userSession)
                 .frame(minWidth: 980, minHeight: 680)
                 .preferredColorScheme(settings.appearance.colorScheme)

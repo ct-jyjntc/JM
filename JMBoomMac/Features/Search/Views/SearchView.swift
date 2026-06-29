@@ -7,8 +7,10 @@ struct SearchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchToolbarView(query: $viewModel.query, isLoading: viewModel.isLoading) {
+            SearchToolbarView(viewModel: viewModel, isLoading: viewModel.isLoading) {
                 Task { await viewModel.submit(endpoint: settings.apiEndpoint) }
+            } useRecent: { query in
+                Task { await viewModel.useRecentQuery(query, endpoint: settings.apiEndpoint) }
             }
 
             Divider()
@@ -39,22 +41,60 @@ struct SearchView: View {
             }
         }
         .navigationTitle("搜索")
+        .onChange(of: viewModel.selectedOrder) { _, _ in
+            guard !viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            Task { await viewModel.submit(endpoint: settings.apiEndpoint) }
+        }
     }
 }
 
 private struct SearchToolbarView: View {
-    @Binding var query: String
+    @Bindable var viewModel: SearchViewModel
     let isLoading: Bool
     let submit: () -> Void
+    let useRecent: (String) -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            TextField("搜索漫画", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                TextField("搜索漫画", text: $viewModel.query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(submit)
 
-            Button("搜索", systemImage: "magnifyingglass", action: submit)
-                .disabled(isLoading)
+                Button("搜索", systemImage: "magnifyingglass", action: submit)
+                    .disabled(isLoading)
+            }
+
+            HStack {
+                Picker("排序", selection: $viewModel.selectedOrder) {
+                    ForEach(CategoryFeedOrder.allCases) { order in
+                        Text(order.title).tag(order)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
+
+                Spacer()
+
+                Button("清除历史", systemImage: "trash") {
+                    viewModel.clearRecentQueries()
+                }
+                .disabled(viewModel.recentQueries.isEmpty)
+            }
+
+            if !viewModel.recentQueries.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.recentQueries, id: \.self) { query in
+                            Button(query) {
+                                useRecent(query)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
         }
         .padding(AppTheme.contentPadding)
     }

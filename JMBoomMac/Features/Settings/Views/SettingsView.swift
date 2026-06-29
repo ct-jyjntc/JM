@@ -9,15 +9,10 @@ struct SettingsView: View {
 
         Form {
             Section("网络") {
-                TextField("API 接口", text: $settings.apiEndpoint)
-                    .onSubmit {
-                        settings.setEndpoint(settings.apiEndpoint)
-                    }
-
                 Button {
                     Task { await viewModel.discoverEndpoints(settings: settings) }
                 } label: {
-                    Label(viewModel.isDiscoveringEndpoints ? "测速中" : "接口测速并优选", systemImage: "speedometer")
+                    Label(viewModel.isDiscoveringEndpoints ? "检测中" : "刷新官方线路状态", systemImage: "antenna.radiowaves.left.and.right")
                 }
                 .disabled(viewModel.isDiscoveringEndpoints)
 

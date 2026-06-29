@@ -114,7 +114,7 @@ actor ReaderService {
             readId: readId,
             readIdNumber: UInt32(readId) ?? captureUInt(pattern: #"var\s+aid\s*=\s*(\d+);"#, html: html) ?? 0,
             shunt: shunt,
-            scrambleId: captureUInt(pattern: #"var\s+scramble_id\s*=\s*(\d+);"#, html: html) ?? 0,
+            scrambleId: captureUInt(pattern: #"var\s+scramble_id\s*=\s*(\d+);"#, html: html) ?? 220_980,
             speed: captureString(pattern: #"var\s+speed\s*=\s*'([^']*)';"#, html: html) ?? "",
             pages: pages
         )
@@ -251,11 +251,14 @@ actor ReaderService {
     private func shouldDecode(manifest: ReaderManifest, page: ReaderPage) -> Bool {
         manifest.readIdNumber > 0
             && sourceExtension(page.sourceURL) != "gif"
-            && manifest.readIdNumber > manifest.scrambleId
-            && manifest.speed != "1"
+            && manifest.readIdNumber >= manifest.scrambleId
     }
 
     private func calculateSeed(readId: UInt32, pageName: String) -> UInt32 {
+        if readId < 268_850 {
+            return 10
+        }
+
         let key = "\(readId)\(pageName)"
         let md5 = CryptoBox.md5Hex(key)
         var charCode = Int(md5.utf8.last ?? 0)

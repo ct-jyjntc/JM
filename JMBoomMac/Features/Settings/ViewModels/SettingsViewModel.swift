@@ -30,9 +30,6 @@ final class SettingsViewModel {
         defer { isDiscoveringEndpoints = false }
 
         endpointProbes = await api.discoverEndpoints()
-        if let preferred = endpointProbes.first(where: \.available) {
-            settings.setEndpoint(preferred.endpoint)
-        }
     }
 
     func loadCacheStats(settings: AppSettings) async {

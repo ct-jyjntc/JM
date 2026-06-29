@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ComicDetailView: View {
@@ -6,7 +7,10 @@ struct ComicDetailView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
     @Environment(UserSessionStore.self) private var userSession
+    @Environment(DownloadStore.self) private var downloads
+    @Environment(PurchasedComicStore.self) private var purchases
     @State private var viewModel = ComicDetailViewModel()
+    @State private var purchaseSheet: PurchaseSheetContext?
 
     var body: some View {
         let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
@@ -23,8 +27,20 @@ struct ComicDetailView: View {
                     ComicDetailContentView(
                         comic: comic,
                         isFavoriteBusy: viewModel.isTogglingFavorite,
+                        isPurchasing: viewModel.isPurchasing,
                         actionMessage: viewModel.actionMessage,
-                        toggleFavorite: toggleFavorite
+                        toggleFavorite: toggleFavorite,
+                        purchase: purchase,
+                        openPurchasePage: {
+                            openPurchasePage(comic: comic)
+                        },
+                        coinBalance: userSession.user?.jCoin,
+                        downloadAll: {
+                            enqueueDownload(comic: comic, chapters: sortedChapters(comic.series))
+                        },
+                        downloadChapter: { chapter, title in
+                            enqueueDownload(comic: comic, chapters: [chapter], overrideTitle: title)
+                        }
                     )
                 } else {
                     EmptyStateView(title: "暂无详情", message: "当前作品没有返回可展示的详情。")
@@ -43,6 +59,35 @@ struct ComicDetailView: View {
         .task(id: comicId) {
             await viewModel.load(comicId: comicId, endpoint: endpoint)
         }
+        .onChange(of: viewModel.comic) { _, comic in
+            if let comic {
+                purchases.remember(comic)
+            }
+        }
+        .sheet(item: $purchaseSheet) { context in
+            PurchaseWebView(
+                comicTitle: context.comic.title,
+                url: context.url,
+                relatedCookieURLs: [URL(string: endpoint)].compactMap(\.self),
+                refreshStatus: {
+                    let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
+                    await viewModel.refresh(comicId: context.comic.id, endpoint: endpoint)
+                    await userSession.refreshSignInData(endpoint: endpoint)
+
+                    if viewModel.comic?.purchased == true {
+                        return "已同步购买状态。"
+                    }
+                    return "已刷新详情；如果刚在官网完成购买，可能需要稍后再刷新。"
+                },
+                persistCookies: {
+                    let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
+                    await userSession.persistCurrentCookies(endpoint: endpoint)
+                },
+                openExternal: {
+                    NSWorkspace.shared.open(context.url)
+                }
+            )
+        }
     }
 
     private func toggleFavorite() {
@@ -55,13 +100,72 @@ struct ComicDetailView: View {
             await viewModel.toggleFavorite(endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint))
         }
     }
+
+    private func purchase() {
+        guard userSession.user != nil else {
+            userSession.presentLogin()
+            return
+        }
+
+        Task {
+            let currentComic = viewModel.comic
+            await viewModel.purchase(endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint))
+            await userSession.refreshSignInData(endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint))
+            await userSession.persistCurrentCookies(endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint))
+
+            let refreshedComic = viewModel.comic ?? currentComic
+            if let refreshedComic, refreshedComic.price > 0, !refreshedComic.purchased {
+                viewModel.noteOfficialPurchaseFallback()
+                openPurchasePage(comic: refreshedComic)
+            }
+        }
+    }
+
+    private func openPurchasePage(comic: ComicDetail) {
+        guard let url = URL(string: "https://18comic.vip/album/\(comic.id)") else { return }
+        purchaseSheet = PurchaseSheetContext(comic: comic, url: url)
+    }
+
+    private func enqueueDownload(comic: ComicDetail, chapters: [ComicChapter], overrideTitle: String? = nil) {
+        let albumId = comic.seriesId.isEmpty ? comic.id : comic.seriesId
+        let author = comic.author.joined(separator: ", ")
+        let ordered = sortedChapters(comic.series)
+        let requests = chapters.map { chapter in
+            let chapterTitle = overrideTitle ?? chapterTitle(for: chapter, in: ordered)
+            return DownloadRequest(
+                comicId: albumId,
+                chapterId: chapter.id,
+                title: comic.title,
+                author: author,
+                coverURL: comic.image,
+                chapterTitle: chapterTitle,
+                endpoint: userSession.authenticatedEndpoint(fallback: settings.apiEndpoint),
+                shunt: settings.imageShunt
+            )
+        }
+
+        downloads.enqueue(requests, cacheLimitBytes: settings.readerCacheLimitBytes)
+    }
+}
+
+private struct PurchaseSheetContext: Identifiable {
+    var id: String { comic.id }
+
+    let comic: ComicDetail
+    let url: URL
 }
 
 private struct ComicDetailContentView: View {
     let comic: ComicDetail
     let isFavoriteBusy: Bool
+    let isPurchasing: Bool
     let actionMessage: String?
     let toggleFavorite: () -> Void
+    let purchase: () -> Void
+    let openPurchasePage: () -> Void
+    let coinBalance: UInt32?
+    let downloadAll: () -> Void
+    let downloadChapter: (ComicChapter, String) -> Void
 
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
@@ -73,15 +177,20 @@ private struct ComicDetailContentView: View {
                 hideCover: settings.hideCovers,
                 isFavorite: comic.isFavorite,
                 isFavoriteBusy: isFavoriteBusy,
+                isPurchasing: isPurchasing,
                 actionMessage: actionMessage,
                 toggleFavorite: toggleFavorite,
+                purchase: purchase,
+                openPurchasePage: openPurchasePage,
+                coinBalance: coinBalance,
+                downloadAll: downloadAll,
                 showComments: {
                     router.openComments(comicId: comic.id, title: comic.title, commentTotal: comic.commentTotal)
                 }
             )
 
             HStack(alignment: .top, spacing: 24) {
-                ChaptersView(comic: comic) { chapter, chapterTitle, chapters in
+                ChaptersView(comic: comic, download: downloadChapter) { chapter, chapterTitle, chapters in
                     router.openReader(
                         ReaderRoute(
                             chapterId: chapter.id,
@@ -110,8 +219,13 @@ private struct ComicHeroView: View {
     let hideCover: Bool
     let isFavorite: Bool
     let isFavoriteBusy: Bool
+    let isPurchasing: Bool
     let actionMessage: String?
     let toggleFavorite: () -> Void
+    let purchase: () -> Void
+    let openPurchasePage: () -> Void
+    let coinBalance: UInt32?
+    let downloadAll: () -> Void
     let showComments: () -> Void
 
     var body: some View {
@@ -144,6 +258,22 @@ private struct ComicHeroView: View {
                         .disabled(isFavoriteBusy)
 
                     Button("评论", systemImage: "bubble", action: showComments)
+
+                    Button("下载整本", systemImage: "arrow.down.circle", action: downloadAll)
+
+                    if comic.price > 0, !comic.purchased {
+                        Button(isPurchasing ? "购买中" : "购买", systemImage: "cart", action: purchase)
+                            .disabled(isPurchasing)
+
+                        Button("官网购买", systemImage: "safari", action: openPurchasePage)
+                    }
+                }
+
+                if comic.price > 0 {
+                    let balance = coinBalance.map { " · 余额 \($0) JCoin" } ?? ""
+                    Label(comic.purchased ? "已购买" : "需 \(comic.price) JCoin\(balance)", systemImage: comic.purchased ? "checkmark.seal" : "cart")
+                        .font(.subheadline)
+                        .foregroundStyle(comic.purchased ? .green : .secondary)
                 }
 
                 if let actionMessage, !actionMessage.isEmpty {
@@ -184,6 +314,7 @@ private struct TagCloudView: View {
 
 private struct ChaptersView: View {
     let comic: ComicDetail
+    let download: (ComicChapter, String) -> Void
     let open: (ComicChapter, String, [ReaderChapterReference]) -> Void
 
     private var indexedChapters: [IndexedChapter] {
@@ -211,11 +342,19 @@ private struct ChaptersView: View {
                     ForEach(indexedChapters, id: \.chapter.id) { indexed in
                         let chapterTitle = readerChapters.first { $0.id == indexed.chapter.id }?.title ?? formatChapterTitle(indexed.chapter, index: indexed.index)
 
-                        Button {
-                            open(indexed.chapter, chapterTitle, readerChapters)
-                        } label: {
-                            Label(chapterTitle, systemImage: "book")
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack(spacing: 6) {
+                            Button {
+                                open(indexed.chapter, chapterTitle, readerChapters)
+                            } label: {
+                                Label(chapterTitle, systemImage: "book")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+
+                            Button("下载", systemImage: "arrow.down.circle") {
+                                download(indexed.chapter, chapterTitle)
+                            }
+                            .labelStyle(.iconOnly)
+                            .help("下载 \(chapterTitle)")
                         }
                     }
                 }
@@ -245,6 +384,11 @@ private func formatChapterTitle(_ chapter: ComicChapter, index: Int) -> String {
         return title
     }
     return chapter.sort.isEmpty ? "章节 \(index + 1)" : "第 \(chapter.sort) 章"
+}
+
+private func chapterTitle(for chapter: ComicChapter, in orderedChapters: [ComicChapter]) -> String {
+    let index = orderedChapters.firstIndex { $0.id == chapter.id } ?? 0
+    return formatChapterTitle(chapter, index: index)
 }
 
 private struct RelatedListView: View {

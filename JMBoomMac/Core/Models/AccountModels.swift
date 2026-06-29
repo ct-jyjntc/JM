@@ -114,6 +114,20 @@ struct FavoriteToggleResult: Sendable {
     let favorited: Bool
 }
 
+struct PurchaseComicResult: Sendable {
+    let endpoint: String
+    let message: String
+}
+
+struct PurchasedComicItem: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let author: String
+    let coverURL: String
+    let price: UInt32
+    let updatedAt: Date
+}
+
 struct FavoriteFolder: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
@@ -133,6 +147,11 @@ struct ComicCommentsResult: Sendable {
     let page: Int
     let total: Int
     let comments: [ComicComment]
+}
+
+struct CommentActionResult: Sendable {
+    let endpoint: String
+    let message: String
 }
 
 struct ComicComment: Identifiable, Hashable, Sendable {

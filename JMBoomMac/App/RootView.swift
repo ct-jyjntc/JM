@@ -4,6 +4,7 @@ struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppSettings.self) private var settings
     @Environment(UserSessionStore.self) private var userSession
+    @Environment(DownloadStore.self) private var downloads
 
     var body: some View {
         @Bindable var userSession = userSession
@@ -55,6 +56,7 @@ struct RootView: View {
         }
         .task {
             await JMBoomAPI.shared.configureProxy(mode: settings.proxyMode, host: settings.proxyHost, port: settings.proxyPort)
+            downloads.resumeQueuedDownloads(cacheLimitBytes: settings.readerCacheLimitBytes)
         }
         .sheet(isPresented: $userSession.isLoginPresented) {
             LoginView()
@@ -86,13 +88,15 @@ private struct SidebarItem: Identifiable {
     static let discoveryItems = [
         SidebarItem(title: "首页", systemImage: "house", route: .home),
         SidebarItem(title: "分类", systemImage: "square.grid.2x2", route: .discover),
+        SidebarItem(title: "韩漫", systemImage: "rectangle.stack", route: .hanman),
         SidebarItem(title: "搜索", systemImage: "magnifyingglass", route: .search),
-        SidebarItem(title: "周榜", systemImage: "calendar", route: .weekly)
+        SidebarItem(title: "榜单", systemImage: "chart.bar", route: .weekly)
     ]
 
     static let libraryItems = [
         SidebarItem(title: "收藏", systemImage: "heart", route: .favorites),
-        SidebarItem(title: "历史", systemImage: "clock", route: .history)
+        SidebarItem(title: "历史", systemImage: "clock", route: .history),
+        SidebarItem(title: "下载", systemImage: "arrow.down.circle", route: .downloads)
     ]
 
     static let accountItems = [
@@ -136,20 +140,28 @@ private struct DetailRouterView: View {
             SearchView()
         case .weekly:
             WeeklyView()
+        case .hanman:
+            HanmanView()
         case .favorites:
             FavoritesView()
         case .history:
             HistoryView()
+        case .downloads:
+            DownloadsView()
         case .me:
             MeView()
         case .settings:
             SettingsView()
         case .comic(let id):
             ComicDetailView(comicId: id)
+        case .channel(let route):
+            ChannelFeedView(route: route)
         case .comments(let route):
             ComicCommentsView(route: route)
         case .reader(let route):
             ReaderScreen(route: route)
+        case .offlineDownload(let id):
+            OfflineDownloadReaderView(downloadId: id)
         }
     }
 }
@@ -157,10 +169,12 @@ private struct DetailRouterView: View {
 private extension AppRoute {
     var rootEquivalent: AppRoute {
         switch self {
-        case .comic, .comments:
+        case .comic, .channel, .comments:
             .home
         case .reader:
             .home
+        case .offlineDownload:
+            .downloads
         default:
             self
         }

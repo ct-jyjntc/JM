@@ -9,7 +9,9 @@ final class ComicCommentsViewModel {
     private(set) var page = 1
     private(set) var isLoading = false
     private(set) var isLoadingMore = false
+    private(set) var isSubmitting = false
     private(set) var errorMessage: String?
+    private(set) var actionMessage: String?
 
     private let api: JMBoomAPI
 
@@ -33,6 +35,23 @@ final class ComicCommentsViewModel {
     func loadNext(comicId: String, endpoint: String) async {
         guard hasMore, !isLoading, !isLoadingMore else { return }
         await loadPage(comicId: comicId, endpoint: endpoint, page: page + 1, appending: true)
+    }
+
+    func post(comicId: String, content: String, parentId: String? = nil, endpoint: String) async -> Bool {
+        isSubmitting = true
+        actionMessage = nil
+        errorMessage = nil
+        defer { isSubmitting = false }
+
+        do {
+            let result = try await api.postComicComment(comicId: comicId, content: content, parentId: parentId, endpoint: endpoint)
+            actionMessage = result.message.isEmpty ? "评论已发送" : result.message
+            await reload(comicId: comicId, endpoint: result.endpoint)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     private func loadPage(comicId: String, endpoint: String, page: Int, appending: Bool) async {

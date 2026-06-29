@@ -43,6 +43,9 @@ private struct MeContentView: View {
     let user: UserProfile
 
     @Environment(AppSettings.self) private var settings
+    @Environment(AppRouter.self) private var router
+    @Environment(DownloadStore.self) private var downloads
+    @Environment(PurchasedComicStore.self) private var purchases
     @Environment(UserSessionStore.self) private var userSession
 
     var body: some View {
@@ -80,6 +83,14 @@ private struct MeContentView: View {
                 ProfileMetricView(title: "收藏", value: "\(user.currentCollectCount)/\(user.maxCollectCount)")
             }
 
+            AccountAssetsPanelView(user: user, downloads: downloads, purchases: purchases, openFavorites: {
+                router.selectRoot(.favorites)
+            }, openDownloads: {
+                router.selectRoot(.downloads)
+            }, openComic: { id in
+                router.openComic(id)
+            })
+
             SignInPanelView()
         }
     }
@@ -91,6 +102,99 @@ private struct MeContentView: View {
 
     private var signInButtonIcon: String {
         userSession.todaySigned ? "checkmark.seal.fill" : "checkmark.seal"
+    }
+}
+
+private struct AccountAssetsPanelView: View {
+    let user: UserProfile
+    let downloads: DownloadStore
+    let purchases: PurchasedComicStore
+    let openFavorites: () -> Void
+    let openDownloads: () -> Void
+    let openComic: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("账号资产", systemImage: "wallet.pass")
+                .font(.headline)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], alignment: .leading, spacing: 12) {
+                AssetTileView(title: "JCoin 余额", value: user.jCoin.formatted(), systemImage: "creditcard")
+                AssetTileView(title: "云端收藏", value: "\(user.currentCollectCount)/\(user.maxCollectCount)", systemImage: "heart")
+                AssetTileView(title: "离线章节", value: downloads.completedTasks.count.formatted(), systemImage: "arrow.down.circle")
+                AssetTileView(title: "已购作品", value: purchases.items.count.formatted(), systemImage: "cart")
+            }
+
+            HStack {
+                Button("查看收藏", systemImage: "heart", action: openFavorites)
+                Button("查看下载", systemImage: "arrow.down.circle", action: openDownloads)
+            }
+
+            if purchases.items.isEmpty {
+                Text("打开已购买作品详情后，会自动记录在这里。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("已购列表")
+                        .font(.subheadline)
+                        .bold()
+
+                    ForEach(purchases.items.prefix(6)) { item in
+                        Button {
+                            openComic(item.id)
+                        } label: {
+                            HStack(spacing: 10) {
+                                RemoteCoverView(title: item.title, imageURL: item.coverURL, hideCover: false)
+                                    .frame(width: 42, height: 56)
+                                    .clipShape(.rect(cornerRadius: 5))
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.title)
+                                        .lineLimit(1)
+                                    Text(item.author.isEmpty ? "已购" : item.author)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                if item.price > 0 {
+                                    Text("\(item.price) JCoin")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(.quaternary.opacity(0.25), in: .rect(cornerRadius: AppTheme.cardCornerRadius))
+    }
+}
+
+private struct AssetTileView: View {
+    let title: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value.isEmpty ? "-" : value)
+                .font(.headline)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.opacity(0.55), in: .rect(cornerRadius: 6))
     }
 }
 

@@ -4,18 +4,21 @@ struct ReaderScreen: View {
     let route: ReaderRoute
 
     @Environment(AppSettings.self) private var settings
+    @Environment(UserSessionStore.self) private var userSession
     @Environment(AppRouter.self) private var router
     @Environment(ReadingHistoryStore.self) private var history
     @State private var viewModel = ReaderViewModel()
 
     var body: some View {
+        let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
+
         ZStack {
             ReaderTheme.background.ignoresSafeArea()
 
             ReaderContentView(
                 route: route,
                 viewModel: viewModel,
-                endpoint: settings.apiEndpoint,
+                endpoint: endpoint,
                 shunt: settings.imageShunt,
                 cacheLimitBytes: settings.readerCacheLimitBytes,
                 prefetchCount: settings.prefetchCount
@@ -33,7 +36,7 @@ struct ReaderScreen: View {
             }
         }
         .task(id: route.chapterId) {
-            await viewModel.load(route: route, endpoint: settings.apiEndpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount)
+            await viewModel.load(route: route, endpoint: endpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount)
             updateHistory()
         }
         .onChange(of: viewModel.currentIndex) { _, _ in
@@ -64,11 +67,13 @@ struct ReaderScreen: View {
     }
 
     private func retry() {
+        let endpoint = userSession.authenticatedEndpoint(fallback: settings.apiEndpoint)
+
         Task {
             if !viewModel.hasReadableContent {
-                await viewModel.load(route: route, endpoint: settings.apiEndpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount, force: true)
+                await viewModel.load(route: route, endpoint: endpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount, force: true)
             } else {
-                await viewModel.reloadCurrent(endpoint: settings.apiEndpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount)
+                await viewModel.reloadCurrent(endpoint: endpoint, shunt: settings.imageShunt, cacheLimitBytes: settings.readerCacheLimitBytes, prefetchCount: settings.prefetchCount)
             }
         }
     }

@@ -21,7 +21,14 @@ struct HomeView: View {
                 } else if viewModel.sections.isEmpty {
                     EmptyStateView(title: "暂无信息流内容", message: "当前接口没有返回可展示的分组。")
                 } else {
-                    HomeSectionsView(sections: viewModel.sections, hideCovers: settings.hideCovers, open: router.openComic)
+                    HomeSectionsView(
+                        sections: viewModel.sections,
+                        hideCovers: settings.hideCovers,
+                        open: router.openComic,
+                        openChannel: { section in
+                            router.openChannel(id: section.filterValue, title: section.title)
+                        }
+                    )
                 }
             }
             .padding(AppTheme.contentPadding)
@@ -37,6 +44,7 @@ private struct HomeSectionsView: View {
     let sections: [HomeFeedSection]
     let hideCovers: Bool
     let open: (String) -> Void
+    let openChannel: (HomeFeedSection) -> Void
 
     var body: some View {
         ForEach(sections) { section in
@@ -47,13 +55,23 @@ private struct HomeSectionsView: View {
                     ComicGridView(items: section.items, hideCovers: hideCovers, open: open)
                 }
             } header: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(section.title)
-                        .font(.title3)
-                        .bold()
-                    Text("\(section.items.count) 部作品")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(section.title)
+                            .font(.title3)
+                            .bold()
+                        Text("\(section.items.count) 部作品")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    if section.type == "promote", !section.filterValue.isEmpty {
+                        Button("更多", systemImage: "chevron.right") {
+                            openChannel(section)
+                        }
+                    }
                 }
             }
         }

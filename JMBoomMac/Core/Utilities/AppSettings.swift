@@ -36,12 +36,18 @@ enum AppAppearance: String, CaseIterable, Identifiable, Codable, Sendable {
 @MainActor
 @Observable
 final class AppSettings {
-    static let fallbackEndpoints = ["https://www.cdnhth.club", "https://www.cdnhjk.net"]
+    static let fallbackEndpoints = [
+        "https://www.cdnhjk.net",
+        "https://www.cdngwc.cc",
+        "https://www.cdngwc.net",
+        "https://www.cdngwc.club",
+        "https://www.cdnutc.me"
+    ]
     static let imageShunts = ["1", "2", "3", "4"]
     static let prefetchCounts = [0, 1, 2, 3, 4, 5, 6]
     static let cacheLimitOptionsMB = [128, 256, 512, 1024, 2048]
 
-    var apiEndpoint: String {
+    private(set) var apiEndpoint: String {
         didSet { persist(apiEndpoint, key: Keys.apiEndpoint) }
     }
 
@@ -103,11 +109,6 @@ final class AppSettings {
         appearance = .system
     }
 
-    func setEndpoint(_ value: String) {
-        let endpoint = Self.normalizedEndpoint(value)
-        apiEndpoint = endpoint.isEmpty ? Self.fallbackEndpoints[0] : endpoint
-    }
-
     var readerCacheLimitBytes: UInt64 {
         UInt64(readerCacheLimitMB) * 1_024 * 1_024
     }
@@ -115,6 +116,9 @@ final class AppSettings {
     private let defaults: UserDefaults
 
     private func sanitize() {
+        if !Self.fallbackEndpoints.contains(apiEndpoint) {
+            apiEndpoint = Self.fallbackEndpoints[0]
+        }
         if !Self.imageShunts.contains(imageShunt) {
             imageShunt = "1"
         }

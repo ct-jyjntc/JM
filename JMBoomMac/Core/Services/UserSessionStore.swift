@@ -17,10 +17,12 @@ final class UserSessionStore {
     private let api: JMBoomAPI
     private let persistence: any UserSessionPersistence
     private var sessionRevision = 0
+    @ObservationIgnored private var authenticationExpiredObserver: NSObjectProtocol?
 
     init(api: JMBoomAPI = .shared, persistence: any UserSessionPersistence = KeychainUserSessionPersistence()) {
         self.api = api
         self.persistence = persistence
+        observeAuthenticationExpiration()
         restorePersistedSession()
     }
 
@@ -139,6 +141,35 @@ final class UserSessionStore {
         }
     }
 
+    func persistCurrentCookies(endpoint: String) async {
+        await updatePersistedCookies(endpoint: authenticatedEndpoint(fallback: endpoint))
+    }
+
+    private func observeAuthenticationExpiration() {
+        authenticationExpiredObserver = NotificationCenter.default.addObserver(
+            forName: .jmAuthenticationExpired,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.expireAuthentication()
+            }
+        }
+    }
+
+    private func expireAuthentication() async {
+        guard user != nil else { return }
+        sessionRevision += 1
+        try? persistence.delete()
+        await api.clearSession()
+        user = nil
+        endpoint = nil
+        signInData = nil
+        statusMessage = nil
+        errorMessage = "登录状态已过期，请重新登录。"
+        isLoginPresented = true
+    }
+
     private func restorePersistedSession() {
         do {
             guard let session = try persistence.load() else { return }
@@ -192,8 +223,11 @@ final class UserSessionStore {
             await signInIfNeeded(endpoint: result.endpoint)
         } catch {
             guard isCurrentSession(session, revision: revision) else { return }
-            statusMessage = "已恢复本地登录状态，网络会话稍后同步"
-            errorMessage = nil
+            user = nil
+            endpoint = nil
+            signInData = nil
+            statusMessage = nil
+            errorMessage = "登录状态已过期，请重新登录。"
         }
     }
 

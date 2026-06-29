@@ -6,19 +6,28 @@ enum AppRoute: Hashable, Sendable {
     case discover
     case search
     case weekly
+    case hanman
     case favorites
     case history
+    case downloads
     case me
     case settings
     case comic(String)
+    case channel(ChannelRoute)
     case comments(ComicCommentsRoute)
     case reader(ReaderRoute)
+    case offlineDownload(String)
 }
 
 struct ComicCommentsRoute: Hashable, Sendable {
     let comicId: String
     let title: String
     let commentTotal: UInt32
+}
+
+struct ChannelRoute: Hashable, Sendable {
+    let id: String
+    let title: String
 }
 
 struct ReaderRoute: Hashable, Sendable {
@@ -51,12 +60,20 @@ final class AppRouter {
         push(.comic(id))
     }
 
+    func openChannel(id: String, title: String) {
+        push(.channel(ChannelRoute(id: id, title: title)))
+    }
+
     func openComments(comicId: String, title: String, commentTotal: UInt32) {
         push(.comments(ComicCommentsRoute(comicId: comicId, title: title, commentTotal: commentTotal)))
     }
 
     func openReader(_ route: ReaderRoute) {
         push(.reader(route))
+    }
+
+    func openOfflineDownload(_ id: String) {
+        push(.offlineDownload(id))
     }
 
     func goBack() {

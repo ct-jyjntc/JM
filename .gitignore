@@ -3,7 +3,7 @@
 .AppleDouble
 .LSOverride
 ._*
-
+.qoder
 # Xcode
 # 用户数据（每个开发者不同，不应共享）
 **/xcuserdata/

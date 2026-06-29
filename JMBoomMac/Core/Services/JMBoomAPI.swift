@@ -4,19 +4,48 @@ actor JMBoomAPI {
     static let shared = JMBoomAPI()
 
     private let apiVersion = "2.0.20"
-    private let loginApiVersion = "1.8.2"
-    private let apiSecret = "185Hcomic3PAPP7R"
+    private let apiTokenSecret = "18comicAPP"
+    private let contentTokenSecret = "18comicAPPContent"
+    private let apiDataSecret = "185Hcomic3PAPP7R"
     private let apiRetryCount = 3
+    private let mobileUserAgent = "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36"
+    private let webUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private let hostConfigSeed = "diosfjckwpqpdfjkvnqQjsik"
-    private let fallbackEndpoints = ["https://www.cdnhth.club", "https://www.cdnhjk.net"]
+    private let fallbackEndpoints = [
+        "https://www.cdnhjk.net",
+        "https://www.cdngwc.cc",
+        "https://www.cdngwc.net",
+        "https://www.cdngwc.club",
+        "https://www.cdnutc.me"
+    ]
     private let hostConfigURLs = [
         "https://rup4a04-c02.tos-cn-hongkong.bytepluses.com/newsvr-2025.txt",
         "https://rup4a04-c01.tos-ap-southeast-1.bytepluses.com/newsvr-2025.txt"
     ]
+    private let blockedEndpointHosts: Set<String> = [
+        "www.cdnaspa.vip",
+        "www.cdnaspa.club",
+        "www.cdnplaystation6.org",
+        "www.cdnplaystation6.vip",
+        "www.cdnplaystation6.cc"
+    ]
     private let unsupportedHomeTitles = ["禁漫小说", "禁漫书库", "禁漫小說", "禁漫書庫"]
 
     private var imgHostCache: [String: String] = [:]
+    private var officialEndpointCache: [String]?
     private var session = URLSession(configuration: .default)
+
+    private func apiGetAuth() -> ApiAuth {
+        .current(version: "", tokenSecret: apiTokenSecret, dataSecret: apiDataSecret)
+    }
+
+    private func apiPostAuth() -> ApiAuth {
+        .current(version: apiVersion, tokenSecret: apiTokenSecret, dataSecret: apiDataSecret)
+    }
+
+    private func contentGetAuth() -> ApiAuth {
+        .current(version: "", tokenSecret: contentTokenSecret, dataSecret: apiDataSecret)
+    }
 
     func clearSession() {
         HTTPCookieStorage.shared.cookies?.forEach { cookie in
@@ -27,20 +56,25 @@ actor JMBoomAPI {
 
     func exportSessionCookies(endpoint: String) throws -> [StoredHTTPCookie] {
         let endpoint = try normalizeEndpoint(endpoint)
-        guard let url = URL(string: endpoint) else { throw APIError.unsupportedEndpoint(endpoint) }
+        let hosts = persistentCookieHosts(for: endpoint)
 
-        return (HTTPCookieStorage.shared.cookies(for: url) ?? [])
+        return (HTTPCookieStorage.shared.cookies ?? [])
+            .filter { cookie in
+                hosts.contains { host in cookie.domainMatches(host) }
+            }
             .map(StoredHTTPCookie.init)
             .filter { !$0.isExpired }
     }
 
     func restoreSessionCookies(_ cookies: [StoredHTTPCookie], endpoint: String) throws {
         let endpoint = try normalizeEndpoint(endpoint)
-        guard let url = URL(string: endpoint) else { throw APIError.unsupportedEndpoint(endpoint) }
+        let hosts = persistentCookieHosts(for: endpoint)
 
         if !cookies.isEmpty {
-            HTTPCookieStorage.shared.cookies(for: url)?.forEach { cookie in
-                HTTPCookieStorage.shared.deleteCookie(cookie)
+            HTTPCookieStorage.shared.cookies?.forEach { cookie in
+                if hosts.contains(where: { cookie.domainMatches($0) }) {
+                    HTTPCookieStorage.shared.deleteCookie(cookie)
+                }
             }
         }
 
@@ -74,11 +108,9 @@ actor JMBoomAPI {
     }
 
     func discoverEndpoints() async -> [ApiEndpointProbe] {
-        var candidates = fallbackEndpoints
-
-        if let hosts = try? await fetchHostConfig() {
-            candidates.append(contentsOf: hosts)
-        }
+        var candidates = await officialEndpointHosts()
+        candidates.append(contentsOf: fallbackEndpoints)
+        candidates.removeAll { isBlockedEndpoint($0) }
 
         var seen = Set<String>()
         candidates = candidates.compactMap { endpoint in
@@ -113,7 +145,7 @@ actor JMBoomAPI {
 
     func homeFeed(endpoint: String) async throws -> [HomeFeedSection] {
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         let imgHost = try? await remoteImageHost(endpoint: endpoint)
         let payload = try await requestAPIValue(endpoint: endpoint, path: "promote", query: [], auth: auth)
 
@@ -149,21 +181,21 @@ actor JMBoomAPI {
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols))
     }
 
-    func search(query: String, page: Int, endpoint: String) async throws -> SearchAlbumsResult {
+    func search(query: String, page: Int, endpoint: String, order: CategoryFeedOrder = .latest) async throws -> SearchAlbumsResult {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             return SearchAlbumsResult(query: query, page: page, total: 0, endpoint: nil, redirectAid: nil, items: [])
         }
 
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         let imgHost = try? await remoteImageHost(endpoint: endpoint)
         let payload = try await requestAPIValue(
             endpoint: endpoint,
             path: "search",
             query: [
                 URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "o", value: "mr"),
+                URLQueryItem(name: "o", value: order.rawValue),
                 URLQueryItem(name: "search_query", value: query)
             ],
             auth: auth
@@ -182,6 +214,9 @@ actor JMBoomAPI {
             }
             if let category = itemObject["category_sub"]?.objectValue?.string("title"), !category.isEmpty, !tags.contains(category) {
                 tags.append(category)
+            }
+            for tag in itemObject["tags"]?.stringArrayValue ?? [] where !tags.contains(tag) {
+                tags.append(tag)
             }
 
             return SearchAlbum(
@@ -217,7 +252,7 @@ actor JMBoomAPI {
         guard !comicId.isEmpty else { throw APIError.missingData("作品 ID 为空。") }
 
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         async let imgHost = try? remoteImageHost(endpoint: endpoint)
         async let payload = requestAPIValue(
             endpoint: endpoint,
@@ -263,7 +298,7 @@ actor JMBoomAPI {
 
         let page = max(1, page)
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         async let imgHost = try? remoteImageHost(endpoint: endpoint)
         async let payload = requestAPIValue(
             endpoint: endpoint,
@@ -286,27 +321,162 @@ actor JMBoomAPI {
         )
     }
 
+    func postComicComment(comicId: String, content: String, parentId: String? = nil, endpoint: String) async throws -> CommentActionResult {
+        let comicId = comicId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !comicId.isEmpty else { throw APIError.missingData("作品 ID 为空。") }
+        guard !content.isEmpty else { throw APIError.missingData("评论内容为空。") }
+
+        let endpoint = try normalizeEndpoint(endpoint)
+        let auth = apiPostAuth()
+        let fields = [
+            URLQueryItem(name: "aid", value: comicId),
+            URLQueryItem(name: "comment", value: content),
+            URLQueryItem(name: "comment_id", value: parentId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? "0")
+        ]
+
+        do {
+            let payload = try await requestFormAPIValue(endpoint: endpoint, path: "comment", fields: fields, auth: auth)
+            return CommentActionResult(endpoint: endpoint, message: try actionSuccessMessage(from: payload, fallback: "评论已发送"))
+        } catch {
+            return try await postWebAlbumComment(comicId: comicId, content: content, parentId: parentId, endpoint: endpoint)
+        }
+    }
+
     func toggleComicFavorite(comicId: String, currentFavorite: Bool, endpoint: String) async throws -> FavoriteToggleResult {
         let comicId = comicId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !comicId.isEmpty else { throw APIError.missingData("作品 ID 为空。") }
 
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
-        _ = try await requestFormAPIValue(
+        let auth = apiPostAuth()
+        let payload = try await requestFormAPIValue(
             endpoint: endpoint,
             path: "favorite",
             fields: [URLQueryItem(name: "aid", value: comicId)],
             auth: auth
         )
+        _ = try actionSuccessMessage(from: payload, fallback: "收藏状态已更新")
 
         return FavoriteToggleResult(endpoint: endpoint, favorited: !currentFavorite)
+    }
+
+    func purchaseComic(comicId: String, endpoint: String) async throws -> PurchaseComicResult {
+        let comicId = comicId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !comicId.isEmpty else { throw APIError.missingData("作品 ID 为空。") }
+
+        let endpoint = try normalizeEndpoint(endpoint)
+        let auth = apiPostAuth()
+        let payload = try await requestFormAPIValue(
+            endpoint: endpoint,
+            path: "coin_buy_comics",
+            fields: [URLQueryItem(name: "id", value: comicId)],
+            auth: auth
+        )
+        let message = try actionSuccessMessage(from: payload, fallback: "购买请求已提交")
+        return PurchaseComicResult(endpoint: endpoint, message: message)
+    }
+
+    private func actionMessage(from payload: JSONValue) -> String? {
+        if let object = payload.objectValue {
+            for key in ["msg", "message", "error", "err"] {
+                let value = object.string(key).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    return value
+                }
+            }
+        }
+
+        if let message = payload.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            return message
+        }
+
+        return nil
+    }
+
+    private func actionSuccessMessage(from payload: JSONValue, fallback: String) throws -> String {
+        if let object = payload.objectValue {
+            if object["err"]?.boolValue == true {
+                throw APIError.api(object.string("msg", fallback: object.string("error", fallback: fallback)))
+            }
+
+            for key in ["error", "err"] {
+                guard let value = object[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { continue }
+                if ["0", "false", "null"].contains(value.lowercased()) { continue }
+                throw APIError.api(value)
+            }
+
+            if let status = object["status"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !status.isEmpty {
+                let normalizedStatus = status.lowercased()
+                if ["ok", "success", "true"].contains(normalizedStatus) {
+                    return object.string("msg", fallback: object.string("message", fallback: fallback))
+                }
+                throw APIError.api(object.string("msg", fallback: object.string("message", fallback: status)))
+            }
+
+            for key in ["msg", "message"] {
+                let message = object.string(key).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !message.isEmpty else { continue }
+                guard !isNegativeActionMessage(message) else { throw APIError.api(message) }
+                return message
+            }
+
+            return fallback
+        }
+
+        if let message = payload.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            guard !isNegativeActionMessage(message) else { throw APIError.api(message) }
+            return message
+        }
+
+        return fallback
+    }
+
+    private func isPositiveActionMessage(_ message: String) -> Bool {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+
+        if isNegativeActionMessage(normalized) {
+            return false
+        }
+
+        return normalized.range(of: #"成功|完成|已購買|已购买|purchased|success|ok"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func isNegativeActionMessage(_ message: String) -> Bool {
+        message.range(of: #"失敗|失败|錯誤|错误|非法|Not legal|not legal|error|denied|unauthorized|不足|未登入|未登录|請先|请先|不能|无法|失效"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func postWebAlbumComment(comicId: String, content: String, parentId: String?, endpoint: String) async throws -> CommentActionResult {
+        var fields = [
+            URLQueryItem(name: "video_id", value: comicId),
+            URLQueryItem(name: "comment", value: content),
+            URLQueryItem(name: "originator", value: ""),
+            URLQueryItem(name: "status", value: "true")
+        ]
+
+        if let parentId, !parentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fields.removeAll { $0.name == "status" }
+            fields.append(URLQueryItem(name: "comment_id", value: parentId))
+            fields.append(URLQueryItem(name: "is_reply", value: "1"))
+            fields.append(URLQueryItem(name: "forum_subject", value: "1"))
+        }
+
+        let payload = try await requestPlainFormValue(endpoint: endpoint, path: "ajax/album_comment", fields: fields)
+        if let object = payload.objectValue {
+            if object["err"]?.boolValue == false {
+                return CommentActionResult(endpoint: endpoint, message: object.string("msg", fallback: "评论已发送"))
+            }
+            throw APIError.api(object.string("msg", fallback: object.string("error", fallback: "评论发送失败。")))
+        }
+
+        return CommentActionResult(endpoint: endpoint, message: payload.stringValue ?? "评论已发送")
     }
 
     func favoriteComics(endpoint: String, page: Int, folderId: String = "", order: String = "mr") async throws -> FavoriteListResult {
         let endpoint = try normalizeEndpoint(endpoint)
         let page = max(1, page)
         let order = order.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "mr" : order.trimmingCharacters(in: .whitespacesAndNewlines)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         async let imgHost = try? remoteImageHost(endpoint: endpoint)
         async let payload = requestAPIValue(
             endpoint: endpoint,
@@ -342,11 +512,10 @@ actor JMBoomAPI {
             throw APIError.missingData("请输入用户名和密码。")
         }
 
-        let endpoint = try normalizeEndpoint(endpoint)
+        let endpoint = await officialEndpointForDirectUse(preferred: endpoint)
         clearSession()
-        let loginAuth = ApiAuth.current(version: loginApiVersion, secret: apiSecret)
-        async let imgHost = try? remoteImageHost(endpoint: endpoint)
-        async let payload = requestMultipartAPIValue(
+        let loginAuth = apiPostAuth()
+        let result = try await requestFormAPIResult(
             endpoint: endpoint,
             path: "login",
             fields: [
@@ -356,15 +525,15 @@ actor JMBoomAPI {
             auth: loginAuth
         )
 
-        let (host, value) = try await (imgHost, payload)
-        return LoginResult(endpoint: endpoint, user: mapUserProfile(value, imgHost: host))
+        let host = try? await remoteImageHost(endpoint: result.endpoint)
+        return LoginResult(endpoint: result.endpoint, user: mapUserProfile(result.value, imgHost: host))
     }
 
     func getSignInData(userId: UInt32, endpoint: String) async throws -> SignInDataResult {
         guard userId > 0 else { throw APIError.missingData("用户 ID 为空。") }
 
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         let payload = try await requestAPIValue(
             endpoint: endpoint,
             path: "daily",
@@ -379,8 +548,8 @@ actor JMBoomAPI {
         guard userId > 0, dailyId > 0 else { throw APIError.missingData("签到信息不完整。") }
 
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
-        let payload = try await requestMultipartAPIValue(
+        let auth = apiPostAuth()
+        let payload = try await requestFormAPIValue(
             endpoint: endpoint,
             path: "daily_chk",
             fields: [
@@ -396,7 +565,7 @@ actor JMBoomAPI {
 
     func weekFilters(endpoint: String) async throws -> WeekFiltersResult {
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         let payload = try await requestAPIValue(endpoint: endpoint, path: "week", query: [], auth: auth)
         guard let object = payload.objectValue else { throw APIError.payload("周榜筛选响应不是对象。") }
 
@@ -416,7 +585,7 @@ actor JMBoomAPI {
 
     func weekItems(endpoint: String, page: Int, categoryId: String, typeId: String) async throws -> WeekItemsResult {
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         async let imgHost = try? remoteImageHost(endpoint: endpoint)
         async let payload = requestAPIValue(
             endpoint: endpoint,
@@ -439,17 +608,74 @@ actor JMBoomAPI {
         )
     }
 
-    func categoryFeed(endpoint: String, page: Int, order: CategoryFeedOrder) async throws -> CategoryFeedResult {
+    func categoryMetadata(endpoint: String) async throws -> CategoryMetadataResult {
+        var lastError: Error?
+        for candidate in await readerEndpointCandidates(preferred: endpoint) {
+            do {
+                return try await categoryMetadataOnce(endpoint: candidate)
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? APIError.network("分类元数据接口不可用。")
+    }
+
+    private func categoryMetadataOnce(endpoint: String) async throws -> CategoryMetadataResult {
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
+        let payload = try await requestAPIValue(endpoint: endpoint, path: "categories", query: [], auth: auth)
+        guard let object = payload.objectValue else { throw APIError.payload("分类元数据响应不是对象。") }
+
+        let categories = object.array("categories").map { value in
+            let item = value.objectValue ?? [:]
+            return CategoryDefinition(
+                id: "\(item.string("id"))-\(item.string("slug", fallback: item.string("name")))",
+                name: item.string("name"),
+                slug: item.string("slug"),
+                type: item.string("type"),
+                totalAlbums: item.string("total_albums"),
+                subcategories: item.array("sub_categories").map { subValue in
+                    let sub = subValue.objectValue ?? [:]
+                    return CategoryDefinition.Subcategory(
+                        id: sub.string("CID", fallback: sub.string("id")),
+                        name: sub.string("name"),
+                        slug: sub.string("slug")
+                    )
+                }
+            )
+        }
+
+        let blocks = object.array("blocks").map { value in
+            let item = value.objectValue ?? [:]
+            return CategoryBlock(title: item.string("title"), tags: item["content"]?.stringArrayValue ?? [])
+        }
+
+        return CategoryMetadataResult(endpoint: endpoint, categories: categories, blocks: blocks)
+    }
+
+    func categoryFeed(endpoint: String, page: Int, order: CategoryFeedOrder, categorySlug: String? = nil) async throws -> CategoryFeedResult {
+        try await categoryFeed(endpoint: endpoint, page: page, orderRawValue: order.rawValue, categorySlug: categorySlug)
+    }
+
+    func categoryFeed(endpoint: String, page: Int, orderRawValue: String, categorySlug: String? = nil) async throws -> CategoryFeedResult {
+        let endpoint = try normalizeEndpoint(endpoint)
+        let auth = apiGetAuth()
+        let order = orderRawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CategoryFeedOrder.latest.rawValue : orderRawValue
+        var queryItems = [
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "order", value: ""),
+            URLQueryItem(name: "o", value: order)
+        ]
+        if let categorySlug = categorySlug?.trimmingCharacters(in: .whitespacesAndNewlines), !categorySlug.isEmpty {
+            queryItems.append(URLQueryItem(name: "c", value: categorySlug))
+        }
+
         async let imgHost = try? remoteImageHost(endpoint: endpoint)
         async let payload = requestAPIValue(
             endpoint: endpoint,
             path: "categories/filter",
-            query: [
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "o", value: order.rawValue)
-            ],
+            query: queryItems,
             auth: auth
         )
         let (host, value) = try await (imgHost, payload)
@@ -459,13 +685,40 @@ actor JMBoomAPI {
             endpoint: endpoint,
             page: page,
             total: Int(object["total"]?.uint32Value ?? 0),
-            items: object.array("content").map { mapFeedComic($0, imgHost: host) }
+            items: object.array("content").map { mapFeedComic($0, imgHost: host) },
+            tags: object["tags"]?.stringArrayValue ?? []
+        )
+    }
+
+    func promoteList(endpoint: String, page: Int, id: String) async throws -> PromoteListResult {
+        let endpoint = try normalizeEndpoint(endpoint)
+        let auth = apiGetAuth()
+        async let imgHost = try? remoteImageHost(endpoint: endpoint)
+        async let payload = requestAPIValue(
+            endpoint: endpoint,
+            path: "promote_list",
+            query: [
+                URLQueryItem(name: "page", value: String(max(1, page))),
+                URLQueryItem(name: "id", value: id)
+            ],
+            auth: auth
+        )
+
+        let (host, value) = try await (imgHost, payload)
+        guard let object = value.objectValue else { throw APIError.payload("频道响应不是对象。") }
+
+        return PromoteListResult(
+            endpoint: endpoint,
+            page: page,
+            total: Int(object["total"]?.uint32Value ?? 0),
+            items: object.array("list").map { mapFeedComic($0, imgHost: host) }
         )
     }
 
     func downloadImageBytes(_ url: URL, referer: String? = nil) async throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("image/avif,image/webp,image/apng,image/*,*/*;q=0.8", forHTTPHeaderField: "accept")
+        request.setValue(mobileUserAgent, forHTTPHeaderField: "user-agent")
         if let referer {
             request.setValue(referer, forHTTPHeaderField: "referer")
         }
@@ -476,7 +729,7 @@ actor JMBoomAPI {
 
     func fetchReaderHTML(readId: String, endpoint: String, shunt: String) async throws -> ReaderHTMLResult {
         var lastError: Error?
-        for candidate in readerEndpointCandidates(preferred: endpoint) {
+        for candidate in await readerEndpointCandidates(preferred: endpoint) {
             do {
                 let html = try await fetchReaderHTMLOnce(readId: readId, endpoint: candidate, shunt: shunt)
                 return ReaderHTMLResult(endpoint: candidate, html: html)
@@ -490,7 +743,7 @@ actor JMBoomAPI {
 
     private func fetchReaderHTMLOnce(readId: String, endpoint: String, shunt: String) async throws -> String {
         let endpoint = try normalizeEndpoint(endpoint)
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = contentGetAuth()
         var components = URLComponents(string: "\(endpoint)/chapter_view_template")
         components?.queryItems = [
             URLQueryItem(name: "id", value: readId),
@@ -504,17 +757,34 @@ actor JMBoomAPI {
 
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "accept")
+        request.setValue(mobileUserAgent, forHTTPHeaderField: "user-agent")
         request.setValue(auth.token, forHTTPHeaderField: "token")
         request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+        applyOfficialHeaders(to: &request, endpoint: endpoint)
 
         let (data, response) = try await session.data(for: request)
         try validate(response: response, requestName: url.absoluteString)
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private func readerEndpointCandidates(preferred: String) -> [String] {
+    private func readerEndpointCandidates(preferred: String) async -> [String] {
+        await apiEndpointCandidates(preferred: preferred)
+    }
+
+    private func apiEndpointCandidates(preferred: String) async -> [String] {
         var seen = Set<String>()
-        return ([preferred] + fallbackEndpoints).compactMap { value in
+        let discovered = await officialEndpointHosts()
+        let officialCandidates = (discovered + fallbackEndpoints).filter { !isBlockedEndpoint($0) }
+        let normalizedOfficialEndpoints = Set(officialCandidates.compactMap { try? normalizeEndpoint($0) })
+        let normalizedPreferred = try? normalizeEndpoint(preferred)
+        let preferredCandidates: [String]
+        if let normalizedPreferred, normalizedOfficialEndpoints.contains(normalizedPreferred), !isBlockedEndpoint(normalizedPreferred) {
+            preferredCandidates = [normalizedPreferred]
+        } else {
+            preferredCandidates = []
+        }
+
+        return (preferredCandidates + officialCandidates).compactMap { value in
             guard let normalized = try? normalizeEndpoint(value), !seen.contains(normalized) else {
                 return nil
             }
@@ -523,12 +793,39 @@ actor JMBoomAPI {
         }
     }
 
+    private func isBlockedEndpoint(_ endpoint: String) -> Bool {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines).replacing(/\/+$/, with: "")
+        let value = trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") ? trimmed : "https://\(trimmed)"
+        guard let host = URLComponents(string: value)?.host?.lowercased() else { return false }
+        return blockedEndpointHosts.contains(host)
+    }
+
+    private func officialEndpointForDirectUse(preferred: String) async -> String {
+        let candidates = await apiEndpointCandidates(preferred: preferred)
+        if let endpoint = candidates.first {
+            return endpoint
+        }
+        return fallbackEndpoints[0]
+    }
+
+    private func officialEndpointHosts() async -> [String] {
+        if let officialEndpointCache {
+            return officialEndpointCache
+        }
+        guard let hosts = try? await fetchHostConfig(), !hosts.isEmpty else {
+            return []
+        }
+        let filteredHosts = hosts.filter { !isBlockedEndpoint($0) }
+        officialEndpointCache = filteredHosts
+        return filteredHosts
+    }
+
     private func remoteImageHost(endpoint: String) async throws -> String {
         if let cached = imgHostCache[endpoint] {
             return cached
         }
 
-        let auth = ApiAuth.current(version: apiVersion, secret: apiSecret)
+        let auth = apiGetAuth()
         let payload = try await requestAPIValue(
             endpoint: endpoint,
             path: "setting",
@@ -566,55 +863,128 @@ actor JMBoomAPI {
     }
 
     private func requestAPIValue(endpoint: String, path: String, query: [URLQueryItem], auth: ApiAuth) async throws -> JSONValue {
-        var components = URLComponents(string: "\(endpoint)/\(path)")
-        components?.queryItems = query.isEmpty ? nil : query
-        guard let url = components?.url else { throw APIError.unsupportedEndpoint(endpoint) }
+        var lastError: Error?
+        for candidate in await apiEndpointCandidates(preferred: endpoint) {
+            do {
+                var components = URLComponents(string: "\(candidate)/\(path)")
+                components?.queryItems = query.isEmpty ? nil : query
+                guard let url = components?.url else { throw APIError.unsupportedEndpoint(candidate) }
 
-        var request = URLRequest(url: url, timeoutInterval: 12)
-        request.setValue("application/json", forHTTPHeaderField: "accept")
-        request.setValue(auth.token, forHTTPHeaderField: "token")
-        request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+                var request = URLRequest(url: url, timeoutInterval: 12)
+                request.setValue("application/json", forHTTPHeaderField: "accept")
+                request.setValue(mobileUserAgent, forHTTPHeaderField: "user-agent")
+                request.setValue(auth.token, forHTTPHeaderField: "token")
+                request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+                applyOfficialHeaders(to: &request, endpoint: candidate)
 
-        return try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+                return try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+            } catch {
+                lastError = error
+                guard shouldRetryAPIRequest(after: error) else { throw error }
+            }
+        }
+
+        throw lastError ?? APIError.network("\(path): 官方 API 线路不可用。")
     }
 
     private func requestFormAPIValue(endpoint: String, path: String, fields: [URLQueryItem], auth: ApiAuth) async throws -> JSONValue {
+        try await requestFormAPIResult(endpoint: endpoint, path: path, fields: fields, auth: auth).value
+    }
+
+    private func requestFormAPIResult(endpoint: String, path: String, fields: [URLQueryItem], auth: ApiAuth) async throws -> APIValueResult {
+        var lastError: Error?
+        for candidate in await apiEndpointCandidates(preferred: endpoint) {
+            do {
+                guard let url = URL(string: "\(candidate)/\(path)") else { throw APIError.unsupportedEndpoint(candidate) }
+                var components = URLComponents()
+                components.queryItems = fields
+
+                var request = URLRequest(url: url, timeoutInterval: 12)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "accept")
+                request.setValue(mobileUserAgent, forHTTPHeaderField: "user-agent")
+                request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "content-type")
+                request.setValue(auth.token, forHTTPHeaderField: "token")
+                request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+                applyOfficialHeaders(to: &request, endpoint: candidate)
+                request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+
+                let value = try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+                return APIValueResult(endpoint: candidate, value: value)
+            } catch {
+                lastError = error
+                guard shouldRetryAPIRequest(after: error) else { throw error }
+            }
+        }
+
+        throw lastError ?? APIError.network("\(path): 官方 API 线路不可用。")
+    }
+
+    private func requestMultipartAPIValue(endpoint: String, path: String, fields: [URLQueryItem], auth: ApiAuth) async throws -> JSONValue {
+        var lastError: Error?
+        for candidate in await apiEndpointCandidates(preferred: endpoint) {
+            do {
+                guard let url = URL(string: "\(candidate)/\(path)") else { throw APIError.unsupportedEndpoint(candidate) }
+                let boundary = "Boundary-\(UUID().uuidString)"
+                var body = Data()
+
+                for field in fields {
+                    body.append("--\(boundary)\r\n")
+                    body.append("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n")
+                    body.append("\(field.value ?? "")\r\n")
+                }
+                body.append("--\(boundary)--\r\n")
+
+                var request = URLRequest(url: url, timeoutInterval: 12)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "accept")
+                request.setValue(mobileUserAgent, forHTTPHeaderField: "user-agent")
+                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "content-type")
+                request.setValue(auth.token, forHTTPHeaderField: "token")
+                request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+                applyOfficialHeaders(to: &request, endpoint: candidate)
+                request.httpBody = body
+
+                return try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+            } catch {
+                lastError = error
+                guard shouldRetryAPIRequest(after: error) else { throw error }
+            }
+        }
+
+        throw lastError ?? APIError.network("\(path): 官方 API 线路不可用。")
+    }
+
+    private func requestPlainFormValue(endpoint: String, path: String, fields: [URLQueryItem]) async throws -> JSONValue {
         guard let url = URL(string: "\(endpoint)/\(path)") else { throw APIError.unsupportedEndpoint(endpoint) }
         var components = URLComponents()
         components.queryItems = fields
 
         var request = URLRequest(url: url, timeoutInterval: 12)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "accept")
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "content-type")
-        request.setValue(auth.token, forHTTPHeaderField: "token")
-        request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
+        request.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "accept")
+        request.setValue("XMLHttpRequest", forHTTPHeaderField: "x-requested-with")
+        request.setValue(webUserAgent, forHTTPHeaderField: "user-agent")
+        request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "content-type")
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
 
-        return try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, requestName: url.absoluteString)
+
+        do {
+            return try JSONDecoder().decode(JSONValue.self, from: data)
+        } catch {
+            let preview = String(data: data.prefix(180), encoding: .utf8) ?? ""
+            throw APIError.decode("\(url.absoluteString): \(error.localizedDescription). \(preview)")
+        }
     }
 
-    private func requestMultipartAPIValue(endpoint: String, path: String, fields: [URLQueryItem], auth: ApiAuth) async throws -> JSONValue {
-        guard let url = URL(string: "\(endpoint)/\(path)") else { throw APIError.unsupportedEndpoint(endpoint) }
-        let boundary = "Boundary-\(UUID().uuidString)"
-        var body = Data()
-
-        for field in fields {
-            body.append("--\(boundary)\r\n")
-            body.append("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n")
-            body.append("\(field.value ?? "")\r\n")
-        }
-        body.append("--\(boundary)--\r\n")
-
-        var request = URLRequest(url: url, timeoutInterval: 12)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "accept")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "content-type")
-        request.setValue(auth.token, forHTTPHeaderField: "token")
-        request.setValue(auth.tokenParameter, forHTTPHeaderField: "tokenparam")
-        request.httpBody = body
-
-        return try await requestPreparedAPIValue(request: request, auth: auth, requestName: url.absoluteString)
+    private func applyOfficialHeaders(to request: inout URLRequest, endpoint: String) {
+        guard let host = URLComponents(string: endpoint)?.host else { return }
+        let origin = "https://\(host)"
+        request.setValue(host, forHTTPHeaderField: "Authority")
+        request.setValue(origin, forHTTPHeaderField: "Origin")
+        request.setValue(origin, forHTTPHeaderField: "Referer")
     }
 
     private func requestPreparedAPIValue(request: URLRequest, auth: ApiAuth, requestName: String) async throws -> JSONValue {
@@ -641,15 +1011,19 @@ actor JMBoomAPI {
         try validate(response: response, requestName: requestName)
         let envelope = try decodeEnvelope(data: data, auth: auth, requestName: requestName)
 
+        if let message = envelope.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            throw apiError(message: message, requestName: requestName)
+        }
+
         guard envelope.code == 200 else {
-            throw APIError.api(envelope.errorMessage ?? "接口返回 code \(envelope.code)。")
+            throw apiError(message: envelope.errorMessage ?? "接口返回 code \(envelope.code)。", requestName: requestName)
         }
         guard let data = envelope.data else {
             throw APIError.missingData("接口没有返回 data。")
         }
 
         if case .string(let encrypted) = data {
-            let decrypted = try CryptoBox.aes256ECBDecryptBase64(encrypted, key: auth.token)
+            let decrypted = try CryptoBox.aes256ECBDecryptBase64(encrypted, key: auth.responseKey)
             return try JSONDecoder().decode(JSONValue.self, from: Data(decrypted.utf8))
         }
 
@@ -672,7 +1046,7 @@ actor JMBoomAPI {
         switch apiError {
         case .http, .decode, .missingData, .network:
             return true
-        case .api, .payload, .unsupportedEndpoint:
+        case .api, .authenticationRequired, .payload, .unsupportedEndpoint:
             return false
         }
     }
@@ -686,15 +1060,54 @@ actor JMBoomAPI {
             return try JSONDecoder().decode(APIEnvelope.self, from: data)
         } catch {
             let preview = String(data: data.prefix(180), encoding: .utf8) ?? ""
+            if isHTMLResponse(preview) {
+                throw APIError.network("\(requestName): 当前线路返回发布页，不是移动 API。")
+            }
             throw APIError.decode("\(requestName): \(error.localizedDescription). \(preview)")
         }
+    }
+
+    private func isHTMLResponse(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.hasPrefix("<!doctype html")
+            || normalized.hasPrefix("<html")
+            || normalized.hasPrefix("<meta")
+            || normalized.contains("<title>")
+            || normalized.contains("禁漫天堂發布頁")
+            || normalized.contains("app下载")
     }
 
     private func validate(response: URLResponse, requestName: String) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401, !isLoginRequest(requestName) {
+                throw authenticationRequiredError()
+            }
             throw APIError.http("\(requestName): HTTP \(http.statusCode)")
         }
+    }
+
+    private func apiError(message: String, requestName: String) -> APIError {
+        if !isLoginRequest(requestName), isAuthenticationExpiredMessage(message) {
+            return authenticationRequiredError()
+        }
+        return .api(message)
+    }
+
+    private func authenticationRequiredError() -> APIError {
+        NotificationCenter.default.post(name: .jmAuthenticationExpired, object: nil)
+        return .authenticationRequired("登录状态已过期，请重新登录。")
+    }
+
+    private func isLoginRequest(_ requestName: String) -> Bool {
+        URLComponents(string: requestName)?.path == "/login"
+    }
+
+    private func isAuthenticationExpiredMessage(_ message: String) -> Bool {
+        message.range(
+            of: #"HTTP\s*401|unauthorized|未登入|未登录|請先登入|请先登录|請先登錄|请先登錄|登入會員|登录会员|登錄會員"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 
     private func normalizeEndpoint(_ value: String) throws -> String {
@@ -712,6 +1125,16 @@ actor JMBoomAPI {
         return normalized
     }
 
+    private func persistentCookieHosts(for endpoint: String) -> Set<String> {
+        var hosts: Set<String> = ["18comic.vip", "www.18comic.vip"]
+        for value in [endpoint] + fallbackEndpoints + (officialEndpointCache ?? []) {
+            if let host = URLComponents(string: value)?.host {
+                hosts.insert(host)
+            }
+        }
+        return hosts
+    }
+
     private func mapFeedComic(_ value: JSONValue, imgHost: String?) -> FeedComic {
         let object = value.objectValue ?? [:]
         let id = object.string("id")
@@ -721,6 +1144,9 @@ actor JMBoomAPI {
         }
         if let category = object["category_sub"]?.objectValue?.string("title"), !category.isEmpty, !tags.contains(category) {
             tags.append(category)
+        }
+        for tag in object["tags"]?.stringArrayValue ?? [] where !tags.contains(tag) {
+            tags.append(tag)
         }
 
         return FeedComic(
@@ -754,6 +1180,9 @@ actor JMBoomAPI {
         }
         if let category = object["category_sub"]?.objectValue?.string("title"), !category.isEmpty, !tags.contains(category) {
             tags.append(category)
+        }
+        for tag in object["tags"]?.stringArrayValue ?? [] where !tags.contains(tag) {
+            tags.append(tag)
         }
 
         return FeedComic(
@@ -898,6 +1327,41 @@ struct WeekItemsResult: Sendable {
     let items: [FeedComic]
 }
 
+struct CategoryMetadataResult: Sendable {
+    let endpoint: String
+    let categories: [CategoryDefinition]
+    let blocks: [CategoryBlock]
+}
+
+struct CategoryDefinition: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let slug: String
+    let type: String
+    let totalAlbums: String
+    let subcategories: [Subcategory]
+
+    struct Subcategory: Identifiable, Hashable, Sendable {
+        let id: String
+        let name: String
+        let slug: String
+    }
+}
+
+struct CategoryBlock: Identifiable, Hashable, Sendable {
+    var id: String { title }
+
+    let title: String
+    let tags: [String]
+}
+
+struct PromoteListResult: Sendable {
+    let endpoint: String
+    let page: Int
+    let total: Int
+    let items: [FeedComic]
+}
+
 struct WeekCategory: Identifiable, Hashable, Sendable {
     let id: String
     let time: String
@@ -933,6 +1397,7 @@ struct CategoryFeedResult: Sendable {
     let page: Int
     let total: Int
     let items: [FeedComic]
+    let tags: [String]
 }
 
 struct ReaderHTMLResult: Sendable {
@@ -960,23 +1425,31 @@ private struct APIEnvelope: Decodable {
     }
 }
 
+private struct APIValueResult: Sendable {
+    let endpoint: String
+    let value: JSONValue
+}
+
 private struct ApiAuth: Sendable {
     let timestamp: Int
     let token: String
     let tokenParameter: String
+    let responseKey: String
 
-    static func current(version: String, secret: String) -> Self {
+    static func current(version: String, tokenSecret: String, dataSecret: String) -> Self {
         let timestamp = Int(Date.now.timeIntervalSince1970)
         return Self(
             timestamp: timestamp,
-            token: CryptoBox.md5Hex("\(timestamp)\(secret)"),
-            tokenParameter: "\(timestamp),\(version)"
+            token: CryptoBox.md5Hex("\(timestamp)\(tokenSecret)"),
+            tokenParameter: "\(timestamp),\(version)",
+            responseKey: CryptoBox.md5Hex("\(timestamp)\(dataSecret)")
         )
     }
 }
 
 enum APIError: LocalizedError {
     case api(String)
+    case authenticationRequired(String)
     case decode(String)
     case http(String)
     case missingData(String)
@@ -986,12 +1459,16 @@ enum APIError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .api(let message), .decode(let message), .http(let message), .missingData(let message), .network(let message), .payload(let message):
+        case .api(let message), .authenticationRequired(let message), .decode(let message), .http(let message), .missingData(let message), .network(let message), .payload(let message):
             message
         case .unsupportedEndpoint(let endpoint):
             "不支持的接口地址：\(endpoint)"
         }
     }
+}
+
+extension Notification.Name {
+    static let jmAuthenticationExpired = Notification.Name("JMAuthenticationExpired")
 }
 
 private extension JSONValue {
@@ -1027,6 +1504,14 @@ private extension String {
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension HTTPCookie {
+    func domainMatches(_ host: String) -> Bool {
+        let normalizedDomain = domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+        let normalizedHost = host.lowercased()
+        return normalizedHost == normalizedDomain || normalizedHost.hasSuffix(".\(normalizedDomain)")
     }
 }
 
